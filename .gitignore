@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual env / uv
+.venv/
+.python-version-local
+
+# Build
+dist/
+build/
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# Output artifacts (allow examples/*.stl)
+*.vtu
+*.vtk
+*.msh
+result.json
+examples/out/
+
+# Claude
+.claude/
