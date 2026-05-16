@@ -1,0 +1,96 @@
+# Build heatstl Docker image and deploy a new Cloud Run revision on push to main.
+#
+# One-time GitHub repo setup (Settings → Secrets and variables → Actions):
+#   GCP_PROJECT_ID    — GCP project id
+#   GCP_SA_KEY        — JSON key for a service account with:
+#                       Artifact Registry Writer, Cloud Run Admin,
+#                       Service Account User (on the Cloud Run runtime SA)
+#   HEATSTL_GCS_BUCKET (variable or secret) — bucket for artefact uploads
+#
+# Optional repository variables (Settings → Variables):
+#   GCP_REGION         — default europe-west2
+#   GCP_ARTIFACT_REPO  — default heatstl
+#   CLOUD_RUN_SERVICE  — default heatstl-api
+#
+# Existing Cloud Run env (e.g. ENGINE_SECRET) is preserved across deploys.
+
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "scripts/deploy_cloudrun.sh"
+      - ".github/workflows/deploy-cloudrun.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudrun-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+  REPO: ${{ vars.GCP_ARTIFACT_REPO || 'heatstl' }}
+  SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'heatstl-api' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO }}/heatstl-api
+        run: |
+          docker buildx create --use --name gha-builder 2>/dev/null || docker buildx use gha-builder
+          docker buildx build \
+            --platform linux/amd64 \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:latest" \
+            --push \
+            .
+
+      - name: Deploy to Cloud Run
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO }}/heatstl-api:${{ github.sha }}
+          BUCKET: ${{ secrets.HEATSTL_GCS_BUCKET }}
+        run: |
+          ENV_VARS="HEATSTL_ARTIFACT_STORE=gcs"
+          if [[ -n "${BUCKET}" ]]; then
+            ENV_VARS+=",HEATSTL_GCS_BUCKET=${BUCKET}"
+          fi
+          gcloud run deploy "${{ env.SERVICE }}" \
+            --image "${IMAGE}" \
+            --region "${{ env.REGION }}" \
+            --platform managed \
+            --port 8080 \
+            --cpu 2 \
+            --memory 2Gi \
+            --concurrency 4 \
+            --min-instances 0 \
+            --max-instances 5 \
+            --timeout 900 \
+            --update-env-vars "${ENV_VARS}" \
+            --allow-unauthenticated

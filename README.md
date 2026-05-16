@@ -205,10 +205,70 @@ Covers:
 - 1D radiation + Robin-back 1D balance via brentq.
 - Starship demo regression: peak T < 1500 K, residual < 2%, `Q_rad/Q_in > 0.7`.
 
+## Cloud Run service (`heatstl[service]`)
+
+`heatstl` ships with an optional FastAPI wrapper that exposes the solver
+as an HTTP service, designed to be deployed on Google Cloud Run and
+called from the [Analog](https://github.com/mbattye/the-grid) "engines"
+sidebar (alongside `inference-engine` and `diagnostic-designer`, mirroring
+their request/response contract).
+
+### Install + run locally
+
+```bash
+uv sync --extra service
+uv run uvicorn heatstl.service.app:app --host 0.0.0.0 --port 8080
+# or
+docker build --platform linux/amd64 -t heatstl-api .
+docker run -p 8080:8080 \
+    -e HEATSTL_ARTIFACT_STORE=local \
+    -e HEATSTL_ARTIFACT_DIR=/tmp/heatstl-artifacts \
+    heatstl-api
+```
+
+### Endpoints
+
+| Verb | Route | Purpose |
+|---|---|---|
+| `GET` | `/health` | liveness probe |
+| `GET` | `/presets` | enumerate built-in presets |
+| `POST` | `/solve/steady` | one-shot steady solve |
+| `POST` | `/solve/transient` | time-stepped solve |
+
+STL input is always a URL (`http(s)://` or `gs://`); the service fetches
+it. Binary outputs are published via the configured **artifact store**
+(`HEATSTL_ARTIFACT_STORE` = `local` or `gcs`) and the response returns
+URIs the Analog grid can resolve through its asset proxy. The contract
+mirrors `diagnostic-designer`'s `ArtifactStore`.
+
+Optional auth: set `ENGINE_SECRET`; clients must send the same value as
+`X-Engine-Token`.
+
+### Deploy to Cloud Run
+
+```bash
+PROJECT_ID=<gcp-project> \
+HEATSTL_GCS_BUCKET=<bucket> \
+./scripts/deploy_cloudrun.sh
+```
+
+The script mirrors the inference-engine deploy: builds `linux/amd64`,
+pushes to Artifact Registry (`heatstl/heatstl-api`), and deploys with
+`--cpu 2 --memory 2Gi --concurrency 4 --timeout 900`. The companion
+`.github/workflows/deploy-cloudrun.yml` automates the same flow on push
+to `main`.
+
+### Analog (the-grid) wiring
+
+To integrate, mirror the inference-engine pattern in
+`lib/heatstl/engine-client.ts` + `mock-engine.ts` + `types.ts`, reading
+`HEATSTL_ENGINE_URL` and `HEATSTL_ENGINE_SECRET` env vars. The response
+URIs are `gs://` paths — resolve them via Analog's existing asset proxy.
+
 ## Out of scope for v4
 
-Temperature-dependent `k(T)`, sub-sampled shadowing, multi-beam, ablation,
-parallel solve, GUI. Next planned: Cloud Run engine for Analog.
+Temperature-dependent `k(T)`, sub-sampled shadowing, multi-beam,
+ablation, parallel solve, GUI.
 
 ## License
 

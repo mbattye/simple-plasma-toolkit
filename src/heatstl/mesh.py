@@ -19,7 +19,26 @@ from .geometry import SurfaceMesh
 
 @contextmanager
 def _gmsh_session(verbose: bool = False):
-    gmsh.initialize()
+    # gmsh.initialize() unconditionally installs a SIGINT handler with
+    # signal.signal(...), which raises ValueError when called outside the
+    # main thread (e.g. from a FastAPI sync-endpoint threadpool). We
+    # monkey-patch signal.signal around the initialise call so that
+    # specific error is swallowed; signal handling is only useful for
+    # interactive gmsh CLI use, not for our headless mesher.
+    import signal as _signal
+    _real_signal = _signal.signal
+
+    def _safe_signal(sig, handler):
+        try:
+            return _real_signal(sig, handler)
+        except ValueError:
+            return None
+
+    _signal.signal = _safe_signal
+    try:
+        gmsh.initialize()
+    finally:
+        _signal.signal = _real_signal
     try:
         gmsh.option.setNumber("General.Terminal", 1 if verbose else 0)
         yield

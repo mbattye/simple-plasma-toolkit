@@ -1,0 +1,29 @@
+# Test + example output (large, not needed in image)
+.venv/
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+examples/out/
+
+# Local artefacts
+*.vtu
+*.vtk
+*.msh
+*.xdmf
+*.h5
+result.json
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Tests don't need to live in the image
+tests/
