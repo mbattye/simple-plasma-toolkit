@@ -9,6 +9,13 @@
 #   - Front-face radiation re-emits the bulk of the absorbed heat each
 #     timestep — without it the steady answer would blow up (see v3 commit).
 #
+# Output:
+#   examples/out/starship_flip.xdmf       — tile temperature, scrub in ParaView
+#   examples/out/starship_flip_arrow.xdmf — companion arrow (1-vertex mesh with
+#       p̂(t) as a vector field). Load alongside, apply Filters → Glyph,
+#       Vectors = incident_scaled, Glyph Type = Arrow, to see an animated
+#       beam-direction indicator that grows/shrinks with q0(t).
+#
 # Run the realistic variant by switching the preset and bumping q0:
 #   --preset starship-flip-realistic --q0 1e6
 # That pushes peak T into the 1500-1800 K range, closer to the material

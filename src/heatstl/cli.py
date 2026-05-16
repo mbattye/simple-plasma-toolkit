@@ -18,6 +18,7 @@ from .io import (
     write_transient_report,
     write_vtu,
     write_vtu_frames,
+    write_xdmf_arrow_timeseries,
     write_xdmf_timeseries,
 )
 from .pipeline import RunConfig, bc_for_step, build_bc, build_mesh_context
@@ -346,6 +347,23 @@ def _run_transient(cfg, cfg_trans, surf, opts, out_path, report_path,
         n_written = len(write_vtu_frames(opts["vtu_frames_pattern"], result))
         if verbose:
             click.echo(f"[heatstl] wrote {n_written} VTU frames at {opts['vtu_frames_pattern']!r}")
+
+    # Companion arrow XDMF: a single point above the tile carrying p̂(t) as
+    # a vector field. Lets the user open both files in ParaView and see an
+    # animated arrow indicating beam direction as the attitude sweeps.
+    out_p = Path(out_path)
+    arrow_path = out_p.with_name(out_p.stem + "_arrow.xdmf")
+    up_dir = (-cfg.back_axis) if cfg.back_axis is not None else np.array([0.0, 0.0, 1.0])
+    anchor = surf.vertices.mean(axis=0) + 0.5 * surf.bbox_diag * up_dir
+    arrow_length = 0.3 * surf.bbox_diag
+    p_hat_history = [p_of_t(float(t)) for t in times]
+    q0_history = [float(q_of_t(float(t))) for t in times]
+    write_xdmf_arrow_timeseries(
+        arrow_path, times, p_hat_history, q0_history,
+        anchor=anchor, arrow_length=arrow_length,
+    )
+    if verbose:
+        click.echo(f"[heatstl] wrote arrow companion {arrow_path}")
 
     meta = {
         "version": __version__, "stl": str(Path(opts["stl_path"]).resolve()),

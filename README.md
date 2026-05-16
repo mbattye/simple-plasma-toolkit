@@ -45,7 +45,12 @@ bash examples/run_starship_flip.sh
 # peak T ≈ 1250 K at t = 305 s, transient energy balance < 2% during the
 # heating window, 120 timesteps in ~20 s wall time
 ```
+
 Open `examples/out/starship_flip.xdmf` in ParaView to scrub through time.
+A companion `examples/out/starship_flip_arrow.xdmf` is written too — load
+it alongside, apply **Filters → Glyph** with `Vectors = incident_scaled`
+and `Glyph Type = Arrow` to see an animated arrow indicating the beam
+direction and pulse magnitude.
 
 ## CLI overview
 
