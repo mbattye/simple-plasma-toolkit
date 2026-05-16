@@ -25,6 +25,8 @@ build/
 *.vtu
 *.vtk
 *.msh
+*.xdmf
+*.h5
 result.json
 examples/out/
 

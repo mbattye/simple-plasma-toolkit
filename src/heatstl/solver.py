@@ -85,6 +85,33 @@ SIGMA_SB = 5.670374419e-8   # Stefan–Boltzmann constant, W/m²/K⁴
 
 
 @dataclass
+class TimeStepResult:
+    """One frame from a transient solve."""
+    t: float
+    T: np.ndarray
+    bc: "BCAssembly"
+    n_newton_iters: int
+    newton_residual: float
+    n_shadowed: int
+
+
+@dataclass
+class TransientResult:
+    """Output of `solve_transient`: time grid and per-step T frames + BCs."""
+    times: np.ndarray
+    T_history: list           # list[np.ndarray], len = len(times)
+    bc_history: list          # list[BCAssembly]
+    mesh: "skfem.MeshTet"
+    basis: "Basis"
+    boundary_indices: np.ndarray
+    boundary_normals: np.ndarray
+    boundary_centroids: np.ndarray
+    n_shadowed_history: list  # list[int]
+    n_newton_history: list    # list[int]
+    mass_matrix: object = None  # scipy sparse; needed for transient energy balance
+
+
+@dataclass
 class SolveResult:
     T: np.ndarray
     mesh: skfem.MeshTet
@@ -297,4 +324,183 @@ def solve_steady(
         boundary_centroids=b_centroids,
         n_newton_iters=n_iters,
         newton_residual=final_resid,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Transient solver: backward Euler + inner Newton for radiation
+# --------------------------------------------------------------------------- #
+
+def solve_transient(
+    mesh_io,
+    *,
+    k: float,
+    rho: float,
+    cp: float,
+    bc_step_fn,         # callable: (step_idx, t) -> (BCAssembly, n_shadowed)
+    times: np.ndarray,
+    T_initial: float = 300.0,
+    newton_tol: float = 1e-4,
+    newton_max_iter: int = 50,
+    progress=None,      # optional callable(step_idx, t, T_max, n_iters)
+) -> TransientResult:
+    """Backward-Euler march of  ρc_p ∂T/∂t = ∇·(k∇T) on the volume.
+
+    `times` must be a strictly-increasing 1-D array of times (s). T at
+    times[0] is set to T_initial; the loop then solves for times[1:].
+
+    At each step we assemble the dt-dependent matrix
+        S = M/Δt + K + A_robin
+    and march
+        S T^{n+1} = (M/Δt) T^n + b_heated + b_robin + radiation_increment(T^{n+1})
+    where the radiation increment is itself Newton-iterated.
+    """
+    mesh = meshio_to_skfem(mesh_io)
+    basis = Basis(mesh, ElementTetP1())
+
+    # --- Time-invariant assemblies ---
+    @BilinearForm
+    def stiff_form(u, v, _w):
+        return k * dot(grad(u), grad(v))
+
+    @BilinearForm
+    def mass_form(u, v, _w):
+        return rho * cp * u * v
+
+    K = stiff_form.assemble(basis)
+    M = mass_form.assemble(basis)
+
+    # --- Forms used per-step (composed from current BC) ---
+    @BilinearForm
+    def robin_lhs(u, v, w):
+        return w["h"] * u * v
+
+    @LinearForm
+    def robin_rhs(v, w):
+        return w["h"] * w["T_inf"] * v
+
+    @LinearForm
+    def heat_load(v, w):
+        return w["q"] * v
+
+    @BilinearForm
+    def rad_lhs(u, v, w):
+        return 4.0 * w["eps"] * SIGMA_SB * w["Tk"] ** 3 * u * v
+
+    @LinearForm
+    def rad_rhs(v, w):
+        return (3.0 * w["eps"] * SIGMA_SB * w["Tk"] ** 4
+                + w["eps"] * SIGMA_SB * w["T_env"] ** 4) * v
+
+    # --- Initial condition ---
+    T = np.full(basis.N, T_initial)
+    T_history = [T.copy()]
+    bc_history: list = []
+    n_shadowed_history: list = []
+    n_newton_history: list = []
+
+    times = np.asarray(times, dtype=float)
+    if times.ndim != 1 or times.size < 2:
+        raise ValueError("`times` must be a 1-D array of length >= 2")
+
+    for step in range(1, times.size):
+        t_new = float(times[step])
+        dt = float(times[step] - times[step - 1])
+        if dt <= 0:
+            raise ValueError(f"non-positive dt at step {step}: {dt}")
+
+        bc, n_shadowed = bc_step_fn(step, t_new)
+        bc.validate()
+
+        # Per-step constant load (heated facets + Robin RHS).
+        rhs_const = (M @ T) / dt
+
+        if bc.heated_facets.size > 0:
+            fb_h = FacetBasis(mesh, ElementTetP1(), facets=bc.heated_facets)
+            q_qp = np.broadcast_to(bc.q_heated[:, None], fb_h.dx.shape).copy()
+            rhs_const = rhs_const + heat_load.assemble(fb_h, q=q_qp)
+
+        A_robin = None
+        if bc.robin_facets.size > 0:
+            fb_r = FacetBasis(mesh, ElementTetP1(), facets=bc.robin_facets)
+            h_qp = np.broadcast_to(bc.h_robin[:, None], fb_r.dx.shape).copy()
+            Tinf_qp = np.broadcast_to(bc.T_inf_robin[:, None], fb_r.dx.shape).copy()
+            A_robin = robin_lhs.assemble(fb_r, h=h_qp)
+            rhs_const = rhs_const + robin_rhs.assemble(fb_r, h=h_qp, T_inf=Tinf_qp)
+
+        fb_rad = None
+        eps_qp = T_env_qp = None
+        if bc.radiation_facets.size > 0:
+            fb_rad = FacetBasis(mesh, ElementTetP1(), facets=bc.radiation_facets)
+            eps_qp = np.broadcast_to(bc.eps_radiation[:, None], fb_rad.dx.shape).copy()
+            T_env_qp = np.broadcast_to(bc.T_env_radiation[:, None], fb_rad.dx.shape).copy()
+
+        # Dirichlet setup (fresh each step in case heated mask changed).
+        if bc.dirichlet_facets.size > 0:
+            D = basis.get_dofs(facets=bc.dirichlet_facets).all()
+        else:
+            D = None
+
+        def _solve_with(A_tot, rhs_tot):
+            if D is not None:
+                x = np.full(basis.N, np.nan)
+                x[D] = bc.T_dirichlet
+                return np.asarray(
+                    skfem.solve(
+                        *skfem.condense(A_tot, rhs_tot, x=x, D=D),
+                        solver=lambda Mx, b: spsolve(Mx, b),
+                    )
+                )
+            return np.asarray(spsolve(A_tot, rhs_tot))
+
+        # --- Newton inner loop (or 1 linear solve if no radiation) ---
+        T_iter = T.copy()
+        n_iters = 0
+        resid = 0.0
+        S_no_rad = M / dt + K + (A_robin if A_robin is not None else 0.0)
+
+        if fb_rad is None:
+            T_iter = _solve_with(S_no_rad, rhs_const)
+            n_iters = 1
+        else:
+            for it in range(1, newton_max_iter + 1):
+                Tk_qp = np.asarray(fb_rad.interpolate(T_iter))
+                Tk_qp = np.maximum(Tk_qp, 1.0)
+                A_rad = rad_lhs.assemble(fb_rad, Tk=Tk_qp, eps=eps_qp)
+                rhs_rad = rad_rhs.assemble(fb_rad, Tk=Tk_qp, eps=eps_qp, T_env=T_env_qp)
+                T_new = _solve_with(S_no_rad + A_rad, rhs_const + rhs_rad)
+                denom = max(float(np.max(np.abs(T_iter))), 1.0)
+                resid = float(np.max(np.abs(T_new - T_iter))) / denom
+                T_iter = T_new
+                n_iters = it
+                if resid < newton_tol:
+                    break
+            else:
+                raise RuntimeError(
+                    f"Newton failed at step {step} (t={t_new:g} s): "
+                    f"final relative update = {resid:.3e}"
+                )
+
+        T = T_iter
+        T_history.append(T.copy())
+        bc_history.append(bc)
+        n_shadowed_history.append(int(n_shadowed))
+        n_newton_history.append(int(n_iters))
+
+        if progress is not None:
+            progress(step, t_new, float(T.max()), n_iters)
+
+    bidx, b_normals, b_centroids = boundary_facet_info(mesh)
+    return TransientResult(
+        times=times,
+        T_history=T_history,
+        bc_history=bc_history,
+        mesh=mesh,
+        basis=basis,
+        boundary_indices=bidx,
+        boundary_normals=b_normals,
+        boundary_centroids=b_centroids,
+        n_shadowed_history=n_shadowed_history,
+        n_newton_history=n_newton_history,
+        mass_matrix=M,
     )

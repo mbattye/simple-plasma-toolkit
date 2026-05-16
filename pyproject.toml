@@ -18,6 +18,7 @@ dependencies = [
     "gmsh>=4.12",
     "scikit-fem>=9.0",
     "pyvista>=0.43",
+    "h5py>=3.10",
 ]
 
 [project.optional-dependencies]

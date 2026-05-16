@@ -72,6 +72,40 @@ def _radiated_power(
     return float(np.sum(integrand * fb.dx))
 
 
+def compute_frame(mesh, T, bc, k: float, n_newton_iters: int = 0) -> Diagnostics:
+    """Diagnostics from a (mesh, T, bc) frame. Used by both the steady and
+    transient paths."""
+    if bc.heated_facets.size > 0:
+        A_heated = _facet_areas(mesh, bc.heated_facets)
+        Q_in = float(np.sum(bc.q_heated * A_heated))
+    else:
+        Q_in = 0.0
+
+    sink_facets = np.concatenate([bc.dirichlet_facets, bc.robin_facets]).astype(np.int64)
+    Q_cond = _conduction_flux_out(mesh, T, k, sink_facets)
+    Q_rad = _radiated_power(mesh, T, bc.radiation_facets, bc.eps_radiation, bc.T_env_radiation)
+
+    Q_out_total = Q_cond + Q_rad
+    residual = (Q_in - Q_out_total) / Q_in if Q_in != 0 else float("nan")
+
+    return Diagnostics(
+        peak_T=float(np.max(T)),
+        min_T=float(np.min(T)),
+        Q_in=Q_in,
+        Q_radiated=Q_rad,
+        Q_conducted_out=Q_cond,
+        Q_out_total=Q_out_total,
+        residual_rel=float(residual),
+        n_newton_iters=int(n_newton_iters),
+        n_tets=int(mesh.t.shape[1]),
+        n_boundary_facets=int(mesh.boundary_facets().size),
+        n_heated_facets=int(bc.heated_facets.size),
+        n_robin_facets=int(bc.robin_facets.size),
+        n_dirichlet_facets=int(bc.dirichlet_facets.size),
+        n_radiation_facets=int(bc.radiation_facets.size),
+    )
+
+
 def compute(result: SolveResult, k: float) -> Diagnostics:
     mesh = result.mesh
     bc = result.bc

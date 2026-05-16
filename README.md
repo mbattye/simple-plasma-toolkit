@@ -6,8 +6,9 @@ problem inside the solid. Output is a `.vtu` temperature field plus a JSON
 diagnostics report.
 
 Deliberately small. Not HEAT. No plasma physics, no field-line tracing, no
-transient, no `k(T)`, no ablation. v3 adds Stefan–Boltzmann front-face
-radiation (Newton-solved). The flow is:
+`k(T)`, no ablation. v3 added Stefan–Boltzmann front-face radiation
+(Newton-solved). **v4 adds transient time-stepping** with time-varying
+heat flux and beam direction (Starship-flip-style demo included). The flow is:
 
 ```
 STL → volume mesh → q(n̂, p̂) on exposed facets → linear FEM solve → T(x)
@@ -28,16 +29,23 @@ bash examples/run_tile.sh
 # peak T ≈ 1133 K, energy residual ≈ 0%
 ```
 
-**Starship preset** — silica TPS tile, Robin coupling on auto-detected back
-face, six hex neighbours that shadow the central tile at grazing beams:
+**Starship steady** — silica TPS tile, Robin back, six hex neighbours,
+front-face radiation:
 
 ```bash
 bash examples/run_starship_tile.sh
+# peak T ≈ 1030 K, Q_rad/Q_in ≈ 94%, energy residual < 1%
 ```
 
-The Starship demo uses a modest `q0` and a grazing beam (θ=75°) so the
-back-Robin contribution stays meaningful relative to radiation, which
-otherwise dominates. Peak T ≈ 1030 K with energy balance < 1%.
+**Starship-flip transient (v4)** — 600 s belly-flop with a Gaussian `q(t)`
+pulse peaking at t=300 s and a slow 60°→90° attitude sweep:
+
+```bash
+bash examples/run_starship_flip.sh
+# peak T ≈ 1250 K at t = 305 s, transient energy balance < 2% during the
+# heating window, 120 timesteps in ~20 s wall time
+```
+Open `examples/out/starship_flip.xdmf` in ParaView to scrub through time.
 
 ## CLI overview
 
@@ -97,11 +105,37 @@ is set to 0 (shadowed). Neighbours are placed in the plane perpendicular
 to the **tile axis** (`--back-axis`), not the beam — so the lattice stays
 flat even for grazing beams.
 
+### Transient mode (v4)
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--transient / --steady` | steady (presets may override) | Solve `ρc_p ∂T/∂t = ∇·(k∇T)` with backward Euler. |
+| `--duration` | required if transient | Simulation time, s. |
+| `--n-steps` | required if transient | Number of timesteps. |
+| `--rho`, `--cp` | required if transient | Material density and specific heat. |
+| `--T-initial` | `300` | Initial temperature, K. |
+| `--q-profile {constant,ramp,gaussian,piecewise}` | `constant` | `q0(t)` shape. |
+| `--q-csv PATH` | — | For `piecewise`: 2-col CSV `(t, q)`. |
+| `--q-ramp-t` | `1.0` | Time to reach `q0` in `ramp`. |
+| `--q-t0`, `--q-fwhm` | — | Gaussian peak time and FWHM. |
+| `--angle-profile {constant,sweep,piecewise}` | `constant` | `p̂(t)` shape. |
+| `--angle-start`, `--angle-end`, `--angle-t0`, `--angle-t1` | — | Sweep parameters (polar deg, s). |
+| `--angle-csv PATH` | — | For `piecewise`: 3-col CSV `(t, θ_deg, φ_deg)`. |
+| `--vtu-frames PATTERN` | — | Also write numbered VTUs (e.g. `out/flip_{:04d}.vtu`). |
+
+In transient mode, output defaults to `result.xdmf` (mesh + time series in
+one file pair). Per-step diagnostics — `peak_T`, `Q_in`, `Q_radiated`,
+`Q_conducted_out`, `dU_dt_W`, and the transient energy balance
+`residual_transient_rel = (Q_in − Q_out − ∂U/∂t)/Q_in` — go in the JSON
+report.
+
 ### Presets
 
 | `--preset` | What it sets |
 |---|---|
-| `starship` | `k=0.1 W/m·K` (silica-fibre TPS), `bc-unheated=adiabatic-back-robin`, `back-h=100 W/m²/K`, `back-T-inf=400 K`, `back-axis=0,0,-1`, `front-radiation` on, `emissivity=0.89`, `T-env=300 K` |
+| `starship` | Steady. `k=0.1 W/m·K` silica TPS, `adiabatic-back-robin`, `back-h=100`, `back-T-inf=400`, `back-axis=0,0,-1`, radiation on with `ε=0.89`, `T-env=300`. |
+| `starship-flip-conservative` | Transient. 600 s, 120 steps, ρ=144, c_p=1200, Gaussian `q(t)` peaking at t=300 s with FWHM 250 s, attitude sweep 60°→90° between 100 and 500 s. |
+| `starship-flip-realistic` | As above but wider attitude sweep (50°→90°). Drive with a larger `--q0` (e.g. `1e6`); peak T pushes 1500–1800 K, into the constant-k approximation limit. |
 
 Presets are *partial* defaults: any flag you set explicitly wins.
 
@@ -114,9 +148,14 @@ Presets are *partial* defaults: any flag you set explicitly wins.
 | `--unit {mm,m}` | `mm` |
 | `--mesh-size FLOAT` | auto (`bbox_diag/30`) |
 
-## Physics (v3)
+## Physics (v4)
 
-- Steady heat equation `∇·(k ∇T) = 0` with constant `k`.
+- Steady: `∇·(k ∇T) = 0`.
+- Transient: `ρ c_p ∂T/∂t = ∇·(k ∇T)`, backward Euler in time. The
+  radiation Newton from v3 becomes the inner loop of each time step.
+  Time-invariant assemblies (`K`, `M`, back-side Robin, radiation set) are
+  built once outside the time loop; heated load and the Newton-linearised
+  radiation matrix update each step.
 - **Heated** facets: Neumann `-k ∂T/∂n = q` where
   `q = q0·max(0, -p̂·n̂)` (oblique) or `q = q0` (normal).
 - **Robin** facets: `-k ∂T/∂n = h (T − T_inf)`.
@@ -161,10 +200,10 @@ Covers:
 - 1D radiation + Robin-back 1D balance via brentq.
 - Starship demo regression: peak T < 1500 K, residual < 2%, `Q_rad/Q_in > 0.7`.
 
-## Out of scope for v3
+## Out of scope for v4
 
-Transient simulation, temperature-dependent `k(T)`, sub-sampled shadowing,
-multi-beam, ablation, parallel solve, GUI.
+Temperature-dependent `k(T)`, sub-sampled shadowing, multi-beam, ablation,
+parallel solve, GUI. Next planned: Cloud Run engine for Analog.
 
 ## License
 
