@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import skfem
 from skfem import ElementTetP1, FacetBasis
-from skfem.helpers import dot, grad
 
 from .solver import SolveResult
 
@@ -16,11 +15,14 @@ from .solver import SolveResult
 class Diagnostics:
     peak_T: float
     min_T: float
-    Q_in: float           # W, total heat in across heated facets
-    Q_out: float          # W, total -k∇T·n̂ integrated over cooled facets
-    residual_rel: float   # (Q_in - Q_out) / Q_in
+    Q_in: float
+    Q_out: float
+    residual_rel: float
     n_tets: int
     n_boundary_facets: int
+    n_heated_facets: int
+    n_robin_facets: int
+    n_dirichlet_facets: int
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -35,28 +37,33 @@ def _facet_areas(mesh: skfem.MeshTet, facet_indices: np.ndarray) -> np.ndarray:
     return 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
 
 
+def _conduction_flux_out(
+    mesh: skfem.MeshTet, T: np.ndarray, k: float, facets: np.ndarray
+) -> float:
+    """∫ -k ∇T · n̂ dA over the given facets (positive = energy leaving the body)."""
+    if facets.size == 0:
+        return 0.0
+    fb = FacetBasis(mesh, ElementTetP1(), facets=facets)
+    gradT = fb.interpolate(T).grad
+    n_qp = fb.normals
+    integrand = -k * np.einsum("ijk,ijk->jk", gradT, n_qp)
+    return float(np.sum(integrand * fb.dx))
+
+
 def compute(result: SolveResult, k: float) -> Diagnostics:
     mesh = result.mesh
+    bc = result.bc
 
-    # Heat in: simple area-weighted sum of per-facet q.
-    if result.facets_heated.size > 0:
-        A_heated = _facet_areas(mesh, result.facets_heated)
-        Q_in = float(np.sum(result.q_on_heated * A_heated))
+    if bc.heated_facets.size > 0:
+        A_heated = _facet_areas(mesh, bc.heated_facets)
+        Q_in = float(np.sum(bc.q_heated * A_heated))
     else:
         Q_in = 0.0
 
-    # Heat out: integrate -k ∇T · n̂ over cooled facets.
-    if result.facets_cooled.size > 0:
-        fb = FacetBasis(mesh, ElementTetP1(), facets=result.facets_cooled)
-        T_at_qp = fb.interpolate(result.T)
-        gradT_qp = T_at_qp.grad  # (3, n_facets, n_qp)
-        # Outward unit normals from FacetBasis quadrature.
-        n_qp = fb.normals  # (3, n_facets, n_qp)
-        # Integrand: -k ∇T · n̂   ; integrate via quadrature weights.
-        integrand = -k * np.einsum("ijk,ijk->jk", gradT_qp, n_qp)
-        Q_out = float(np.sum(integrand * fb.dx))
-    else:
-        Q_out = 0.0
+    # Sum the conducted flux out over every BC patch that can carry energy:
+    # Dirichlet, Robin. Adiabatic facets contribute 0 to good precision.
+    sink_facets = np.concatenate([bc.dirichlet_facets, bc.robin_facets]).astype(np.int64)
+    Q_out = _conduction_flux_out(mesh, result.T, k, sink_facets)
 
     residual = (Q_in - Q_out) / Q_in if Q_in != 0 else float("nan")
 
@@ -68,4 +75,7 @@ def compute(result: SolveResult, k: float) -> Diagnostics:
         residual_rel=float(residual),
         n_tets=int(mesh.t.shape[1]),
         n_boundary_facets=int(result.boundary_indices.size),
+        n_heated_facets=int(bc.heated_facets.size),
+        n_robin_facets=int(bc.robin_facets.size),
+        n_dirichlet_facets=int(bc.dirichlet_facets.size),
     )

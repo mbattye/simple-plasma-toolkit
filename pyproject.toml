@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "trimesh>=4.0",
+    "rtree>=1.2",
     "meshio>=5.3",
     "gmsh>=4.12",
     "scikit-fem>=9.0",
