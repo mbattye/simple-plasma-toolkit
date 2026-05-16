@@ -42,6 +42,16 @@ class RunConfig:
     # p_hat when None.
     back_axis: np.ndarray | None = None
 
+    # Front-face radiation (nonlinear). When True, every heated facet also
+    # radiates: net flux = q_in − εσ(T⁴ − T_env⁴). Solved via Newton.
+    front_radiation: bool = False
+    emissivity: float = 0.89
+    T_env: float = 300.0
+
+    # Newton tolerances
+    newton_tol: float = 1e-4
+    newton_max_iter: int = 50
+
     # Optional neighbours / shadowing
     neighbors: str = "none"      # 'none' | 'hex6'
     tile_pitch: float | None = None
@@ -94,6 +104,23 @@ def build_bc(surf: SurfaceMesh, cfg: RunConfig) -> PipelineOutput:
     bc = BCAssembly()
     bc.heated_facets = bidx[heated]
     bc.q_heated = q[heated]
+
+    # Radiation patch: every facet that points "forward" (away from the
+    # tile back) radiates to the environment, regardless of whether the
+    # current beam is actually hitting it.
+    #
+    # We DO NOT tie this to the heated mask, because (a) physically the
+    # cool side of a hot tile still radiates while the beam is off-axis,
+    # and (b) numerical noise in facet normals produces ~1e-11 illuminated
+    # facets on geometric sides that would otherwise be forced toward
+    # T_env by an εσT⁴ outflux they can't supply.
+    if cfg.front_radiation:
+        front_axis = -tile_axis
+        cos_front = normals @ front_axis
+        rad_mask = cos_front > 0.05  # ≤ ~87° from front
+        bc.radiation_facets = bidx[rad_mask]
+        bc.eps_radiation = np.full(bc.radiation_facets.size, cfg.emissivity)
+        bc.T_env_radiation = np.full(bc.radiation_facets.size, cfg.T_env)
 
     non_heated = ~heated
     mode = cfg.bc_unheated

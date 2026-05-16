@@ -8,21 +8,25 @@ import numpy as np
 import skfem
 from skfem import ElementTetP1, FacetBasis
 
-from .solver import SolveResult
+from .solver import SIGMA_SB, SolveResult
 
 
 @dataclass
 class Diagnostics:
     peak_T: float
     min_T: float
-    Q_in: float
-    Q_out: float
-    residual_rel: float
+    Q_in: float                   # W, integrated incident flux on heated facets
+    Q_radiated: float             # W, integrated εσ(T⁴-T_env⁴) on radiation facets
+    Q_conducted_out: float        # W, integrated -k∇T·n̂ on Dirichlet+Robin facets
+    Q_out_total: float            # W, Q_radiated + Q_conducted_out (everything that leaves the body)
+    residual_rel: float           # (Q_in - Q_out_total) / Q_in
+    n_newton_iters: int
     n_tets: int
     n_boundary_facets: int
     n_heated_facets: int
     n_robin_facets: int
     n_dirichlet_facets: int
+    n_radiation_facets: int
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -50,6 +54,24 @@ def _conduction_flux_out(
     return float(np.sum(integrand * fb.dx))
 
 
+def _radiated_power(
+    mesh: skfem.MeshTet,
+    T: np.ndarray,
+    facets: np.ndarray,
+    eps: np.ndarray,
+    T_env: np.ndarray,
+) -> float:
+    """∫ εσ(T⁴ - T_env⁴) dA on the radiation patch (positive = energy leaving)."""
+    if facets.size == 0:
+        return 0.0
+    fb = FacetBasis(mesh, ElementTetP1(), facets=facets)
+    T_qp = np.asarray(fb.interpolate(T))
+    eps_qp = np.broadcast_to(eps[:, None], fb.dx.shape)
+    Tenv_qp = np.broadcast_to(T_env[:, None], fb.dx.shape)
+    integrand = eps_qp * SIGMA_SB * (T_qp ** 4 - Tenv_qp ** 4)
+    return float(np.sum(integrand * fb.dx))
+
+
 def compute(result: SolveResult, k: float) -> Diagnostics:
     mesh = result.mesh
     bc = result.bc
@@ -60,22 +82,29 @@ def compute(result: SolveResult, k: float) -> Diagnostics:
     else:
         Q_in = 0.0
 
-    # Sum the conducted flux out over every BC patch that can carry energy:
-    # Dirichlet, Robin. Adiabatic facets contribute 0 to good precision.
     sink_facets = np.concatenate([bc.dirichlet_facets, bc.robin_facets]).astype(np.int64)
-    Q_out = _conduction_flux_out(mesh, result.T, k, sink_facets)
+    Q_cond = _conduction_flux_out(mesh, result.T, k, sink_facets)
 
-    residual = (Q_in - Q_out) / Q_in if Q_in != 0 else float("nan")
+    Q_rad = _radiated_power(
+        mesh, result.T, bc.radiation_facets, bc.eps_radiation, bc.T_env_radiation
+    )
+
+    Q_out_total = Q_cond + Q_rad
+    residual = (Q_in - Q_out_total) / Q_in if Q_in != 0 else float("nan")
 
     return Diagnostics(
         peak_T=float(np.max(result.T)),
         min_T=float(np.min(result.T)),
         Q_in=Q_in,
-        Q_out=Q_out,
+        Q_radiated=Q_rad,
+        Q_conducted_out=Q_cond,
+        Q_out_total=Q_out_total,
         residual_rel=float(residual),
+        n_newton_iters=int(result.n_newton_iters),
         n_tets=int(mesh.t.shape[1]),
         n_boundary_facets=int(result.boundary_indices.size),
         n_heated_facets=int(bc.heated_facets.size),
         n_robin_facets=int(bc.robin_facets.size),
         n_dirichlet_facets=int(bc.dirichlet_facets.size),
+        n_radiation_facets=int(bc.radiation_facets.size),
     )

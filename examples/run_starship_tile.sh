@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Starship hexagonal heat-shield tile: realistic-ish preset with neighbour
-# shadowing, plus an oblique beam steep enough to actually exercise it.
+# shadowing, oblique beam, and v3 front-face radiation.
 #
-# Two important caveats up front:
-#   1. v2 is a STEADY LINEAR model. Real reentry tiles radiate strongly
-#      (q_rad = εσT⁴), and that's what keeps the surface near ~1700 K. With
-#      radiation out of scope, the steady answer here just reflects how much
-#      heat the back face can dump via Robin coupling to the steel skin — so
-#      we pick a modest q0 so peak T stays in a useful range. Don't read
-#      these temperatures as flight predictions.
-#   2. Shadowing only kicks in for grazing beams when all tiles are coplanar:
-#      with a steep beam, rays from the central tile's top face go up *over*
-#      the neighbours. θ ≳ 70° illuminates the side facets, and *then* the
-#      neighbours occlude them.
+# v3 turns εσ(T⁴-T_env⁴) re-radiation on for this preset, which is the
+# dominant cooling channel for a low-k silica TPS tile. Without it (v2)
+# the steady answer blew up to ~10⁴ K because energy could only escape
+# through 25 mm of k=0.1 W/m·K material via the back-face Robin term.
+# With radiation on, ~90% of the absorbed beam re-emits off the hot face
+# and peak T sits in the right physical band for the chosen q0.
+#
+# Shadowing only kicks in for grazing beams when all tiles are coplanar:
+# with a steep beam, rays from the central tile's top face go up *over*
+# the neighbours. θ ≳ 70° illuminates the side facets, and *then* the
+# neighbours occlude them.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/.."

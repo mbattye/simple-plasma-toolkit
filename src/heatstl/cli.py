@@ -45,6 +45,12 @@ NEIGHBORS = ["none", "hex6"]
 @click.option("--back-T-inf", "back_T_inf", default=None, type=float, help="Robin T_inf on back face, K.")
 @click.option("--back-tol-deg", default=30.0, show_default=True, type=float, help="Angle tolerance (deg) for back-face detection.")
 @click.option("--back-axis", default=None, help="Geometric back direction as 'x,y,z' (default: same as beam --direction). Pin this for oblique beams so back-face detection stays stable.")
+# Front-face radiation (nonlinear)
+@click.option("--front-radiation/--no-front-radiation", "front_radiation", default=None, help="Re-radiation εσ(T⁴-T_env⁴) on heated facets. Default off; 'starship' preset turns it on.")
+@click.option("--emissivity", default=None, type=float, help="Emissivity ε of the heated face (default 0.89 for silica TPS).")
+@click.option("--T-env", "T_env", default=None, type=float, help="Radiative sink temperature, K (default 300).")
+@click.option("--newton-tol", default=1e-4, show_default=True, type=float, help="Relative tolerance for the radiation Newton loop.")
+@click.option("--newton-max-iter", default=50, show_default=True, type=int, help="Max iterations for the radiation Newton loop.")
 # Neighbours
 @click.option("--neighbors", type=click.Choice(NEIGHBORS), default="none", show_default=True, help="Surround central tile with neighbours and apply shadowing.")
 @click.option("--tile-pitch", default=None, type=float, help="Centre-to-centre tile pitch (STL units). Auto: 2 × projected half-extent.")
@@ -74,6 +80,11 @@ def main(
     back_T_inf,
     back_tol_deg,
     back_axis,
+    front_radiation,
+    emissivity,
+    T_env,
+    newton_tol,
+    newton_max_iter,
     neighbors,
     tile_pitch,
     tile_gap,
@@ -102,6 +113,12 @@ def main(
     if back_axis is None:
         back_axis = preset_data.get("back_axis")
     back_axis_vec = parse_direction(back_axis) if back_axis else None
+    if front_radiation is None:
+        front_radiation = bool(preset_data.get("front_radiation", False))
+    if emissivity is None:
+        emissivity = preset_data.get("emissivity", 0.89)
+    if T_env is None:
+        T_env = preset_data.get("T_env", 300.0)
 
     # Beam direction.
     if direction is not None and angle_deg is not None:
@@ -143,6 +160,11 @@ def main(
         back_T_inf=back_T_inf,
         back_tol_deg=back_tol_deg,
         back_axis=back_axis_vec,
+        front_radiation=front_radiation,
+        emissivity=emissivity,
+        T_env=T_env,
+        newton_tol=newton_tol,
+        newton_max_iter=newton_max_iter,
         neighbors=neighbors,
         tile_pitch=tile_pitch_m,
         tile_gap=tile_gap_m,
@@ -158,12 +180,21 @@ def main(
         click.echo(
             f"[heatstl] mesh: {n_tets} tets, "
             f"heated={out.n_central_heated} shadowed={out.n_shadowed}, "
-            f"robin={out.bc.robin_facets.size} dirichlet={out.bc.dirichlet_facets.size}"
+            f"robin={out.bc.robin_facets.size} dirichlet={out.bc.dirichlet_facets.size} "
+            f"radiation={out.bc.radiation_facets.size}"
         )
         click.echo(f"[heatstl] solving…")
 
-    result = solve_steady(out.mesh_io, k=k, bc=out.bc)
+    result = solve_steady(
+        out.mesh_io, k=k, bc=out.bc,
+        newton_tol=newton_tol, newton_max_iter=newton_max_iter,
+    )
     diag = compute_diagnostics(result, k=k)
+    if verbose and out.bc.radiation_facets.size > 0:
+        click.echo(
+            f"[heatstl] Newton: {result.n_newton_iters} iters, "
+            f"final rel update = {result.newton_residual:.2e}"
+        )
 
     write_vtu(out_path, result)
     meta = {
@@ -187,6 +218,11 @@ def main(
         "tile_gap_user_units": tile_gap,
         "unit": unit,
         "n_shadowed_facets": out.n_shadowed,
+        "front_radiation": front_radiation,
+        "emissivity": emissivity,
+        "T_env_K": T_env,
+        "newton_tol": newton_tol,
+        "newton_max_iter": newton_max_iter,
         "wall_seconds": time.perf_counter() - t0,
     }
     write_report(report_path, diag, meta)
@@ -194,7 +230,9 @@ def main(
     click.echo(f"[heatstl] wrote {out_path} and {report_path}")
     click.echo(
         f"[heatstl] peak T = {diag.peak_T:.2f} K  |  "
-        f"Q_in = {diag.Q_in:.3e} W  |  Q_out = {diag.Q_out:.3e} W  |  "
+        f"Q_in = {diag.Q_in:.3e} W  |  "
+        f"Q_rad = {diag.Q_radiated:.3e} W  |  "
+        f"Q_cond = {diag.Q_conducted_out:.3e} W  |  "
         f"residual = {diag.residual_rel*100:+.2f}%"
     )
 

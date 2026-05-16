@@ -6,7 +6,8 @@ problem inside the solid. Output is a `.vtu` temperature field plus a JSON
 diagnostics report.
 
 Deliberately small. Not HEAT. No plasma physics, no field-line tracing, no
-transient, no `k(T)`, no radiation, no ablation. The flow is:
+transient, no `k(T)`, no ablation. v3 adds Stefan–Boltzmann front-face
+radiation (Newton-solved). The flow is:
 
 ```
 STL → volume mesh → q(n̂, p̂) on exposed facets → linear FEM solve → T(x)
@@ -34,9 +35,9 @@ face, six hex neighbours that shadow the central tile at grazing beams:
 bash examples/run_starship_tile.sh
 ```
 
-The Starship demo deliberately uses a modest `q0` and a grazing beam
-(θ=75°): see [the radiation caveat](#radiation-and-the-starship-preset)
-below.
+The Starship demo uses a modest `q0` and a grazing beam (θ=75°) so the
+back-Robin contribution stays meaningful relative to radiation, which
+otherwise dominates. Peak T ≈ 1030 K with energy balance < 1%.
 
 ## CLI overview
 
@@ -100,7 +101,7 @@ flat even for grazing beams.
 
 | `--preset` | What it sets |
 |---|---|
-| `starship` | `k=0.1 W/m·K` (silica-fibre TPS), `bc-unheated=adiabatic-back-robin`, `back-h=100 W/m²/K`, `back-T-inf=400 K`, `back-axis=0,0,-1` |
+| `starship` | `k=0.1 W/m·K` (silica-fibre TPS), `bc-unheated=adiabatic-back-robin`, `back-h=100 W/m²/K`, `back-T-inf=400 K`, `back-axis=0,0,-1`, `front-radiation` on, `emissivity=0.89`, `T-env=300 K` |
 
 Presets are *partial* defaults: any flag you set explicitly wins.
 
@@ -113,35 +114,40 @@ Presets are *partial* defaults: any flag you set explicitly wins.
 | `--unit {mm,m}` | `mm` |
 | `--mesh-size FLOAT` | auto (`bbox_diag/30`) |
 
-## Physics (v2)
+## Physics (v3)
 
-- Steady linear heat equation `∇·(k ∇T) = 0` with constant `k`.
+- Steady heat equation `∇·(k ∇T) = 0` with constant `k`.
 - **Heated** facets: Neumann `-k ∂T/∂n = q` where
   `q = q0·max(0, -p̂·n̂)` (oblique) or `q = q0` (normal).
 - **Robin** facets: `-k ∂T/∂n = h (T − T_inf)`.
 - **Dirichlet** facets: `T = T_D`.
+- **Radiation** facets (v3): `k ∂T/∂n = q − εσ(T⁴ − T_env⁴)`. Nonlinear;
+  solved by Newton-linearisation `T⁴ ≈ 4T_k³T − 3T_k⁴`, which adds a
+  Robin-like mass `4εσT_k³` to the LHS and a constant `3εσT_k⁴ + εσT_env⁴`
+  to the RHS each iteration. Initial guess is the pure-radiation
+  equilibrium `T = (q_avg/(εσ))^¼`; typically converges in 4–8 iterations.
 - **Adiabatic** facets: zero flux (natural BC, no action).
 
-## Radiation and the Starship preset
+### Front-face radiation flags
 
-The Starship preset is deliberately *realistic-in-material-and-attachment*
-but **steady-state and non-radiative**. In flight, the tile surface
-radiates strongly (`q_rad = εσT⁴`), and that is what keeps the surface
-near ~1700 K under multi-MW/m² heating. With radiation out of scope, you
-will see unphysically high steady temperatures if you push `q0` to a real
-peak-reentry value: the model has no way to dump that energy other than
-through the back face, which is rate-limited by `back_h` and the tile's
-thermal resistance `L/k`.
+| Flag | Default | Meaning |
+|---|---|---|
+| `--front-radiation / --no-front-radiation` | off (presets may override) | Enable Stefan–Boltzmann on outward-facing facets. |
+| `--emissivity` | `0.89` | ε, silica TPS-class. |
+| `--T-env` | `300` | Radiative sink temperature, K. |
+| `--newton-tol` | `1e-4` | Relative tolerance on Newton update. |
+| `--newton-max-iter` | `50` | Hard cap. |
 
-For sensible steady demos, keep `q0` modest (the example uses
-`5e4 W/m²`) or switch to a high-conductivity material (the v1 example
-uses tungsten-ish `k=150 W/m·K`). v3 will add a radiation BC.
+Radiation attaches to every boundary facet whose outward normal points
+forward (`n̂ · (−back_axis) > 0.05`), so a hot side facet still re-radiates
+when the beam misses it. Without this fix the v2 Starship preset blew up
+to ~10⁴ K because energy could only escape through 25 mm of `k=0.1` TPS.
 
 ## Tests
 
 ```bash
-uv run pytest               # 18 fast tests
-uv run pytest -m slow       # 2 slab analytic comparisons (Dirichlet, Robin)
+uv run pytest               # fast unit tests
+uv run pytest -m slow       # slab analytics + Starship regression
 ```
 
 Covers:
@@ -150,13 +156,15 @@ Covers:
 - Back-face classification under straight and oblique beams.
 - Hex neighbour offset placement (perpendicular plane, distances, angular spacing).
 - Shadow ray-cast against a known occluder.
-- 1D slab analytic comparison for both `dirichlet` and `adiabatic-back-robin` BCs.
+- 1D slab analytic comparison for `dirichlet` and `adiabatic-back-robin` BCs.
+- 1D pure-radiation slab matches `(q/(εσ) + T_env⁴)^¼`.
+- 1D radiation + Robin-back 1D balance via brentq.
+- Starship demo regression: peak T < 1500 K, residual < 2%, `Q_rad/Q_in > 0.7`.
 
-## Out of scope for v2
+## Out of scope for v3
 
-Radiation BC (`q_rad = εσ(T⁴ − T_∞⁴)`), transient simulation, temperature-
-dependent `k`, sub-sampled shadowing, multi-beam, ablation, parallel solve,
-GUI.
+Transient simulation, temperature-dependent `k(T)`, sub-sampled shadowing,
+multi-beam, ablation, parallel solve, GUI.
 
 ## License
 
