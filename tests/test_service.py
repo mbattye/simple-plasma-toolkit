@@ -61,10 +61,14 @@ def fake_stl_url(monkeypatch):
 def tmp_artifact_dir(monkeypatch, tmp_path):
     art_dir = tmp_path / "artifacts"
     art_dir.mkdir()
-    monkeypatch.setenv("HEATSTL_ARTIFACT_STORE", "local")
-    monkeypatch.setenv("HEATSTL_ARTIFACT_DIR", str(art_dir))
+    monkeypatch.setenv("ENGINE_ARTIFACT_STORE", "local")
+    monkeypatch.setenv("ENGINE_ARTIFACT_DIR", str(art_dir))
+    # Clear the heatstl-side caches so the next call rebuilds the store
+    # against the new env vars.
     from heatstl.service import app as service_app
+    from heatstl.service import artifact_store as artifact_mod
     service_app._store = None
+    artifact_mod.reset_default_store()
     return art_dir
 
 

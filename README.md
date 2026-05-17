@@ -246,8 +246,8 @@ uv run uvicorn heatstl.service.app:app --host 0.0.0.0 --port 8080
 # or
 docker build --platform linux/amd64 -t heatstl-api .
 docker run -p 8080:8080 \
-    -e HEATSTL_ARTIFACT_STORE=local \
-    -e HEATSTL_ARTIFACT_DIR=/tmp/heatstl-artifacts \
+    -e ENGINE_ARTIFACT_STORE=local \
+    -e ENGINE_ARTIFACT_DIR=/tmp/heatstl-artifacts \
     heatstl-api
 ```
 
@@ -260,35 +260,78 @@ docker run -p 8080:8080 \
 | `POST` | `/solve/steady` | one-shot steady solve |
 | `POST` | `/solve/transient` | time-stepped solve |
 
-STL input is always a URL (`http(s)://` or `gs://`); the service fetches
+STL input is always a URL (`http(s)://` or `s3://`); the service fetches
 it. Binary outputs are published via the configured **artifact store**
-(`HEATSTL_ARTIFACT_STORE` = `local` or `gcs`) and the response returns
+(`ENGINE_ARTIFACT_STORE` = `local` or `s3`) and the response returns
 URIs the Analog grid can resolve through its asset proxy. The contract
-mirrors `diagnostic-designer`'s `ArtifactStore`.
+mirrors `diagnostic-designer`'s `ArtifactStore` exactly — same env-var
+names, same `s3://` URI scheme, same Cloudflare R2 bucket — so a single
+the-grid asset proxy handles outputs from either engine.
 
 Optional auth: set `ENGINE_SECRET`; clients must send the same value as
 `X-Engine-Token`.
+
+### Storage: Cloudflare R2 (shared with diagnostic-designer)
+
+| Env var | Value (production) |
+|---|---|
+| `ENGINE_ARTIFACT_STORE` | `s3` |
+| `ENGINE_S3_BUCKET` | `analog-twins` (same bucket the-grid proxies) |
+| `ENGINE_S3_ENDPOINT` | `https://<cloudflare-account-id>.r2.cloudflarestorage.com` |
+| `ENGINE_S3_REGION` | `auto` |
+| `ENGINE_S3_ACCESS_KEY_ID` | from R2 API token (kept in Google Secret Manager) |
+| `ENGINE_S3_SECRET_ACCESS_KEY` | from R2 API token (kept in Google Secret Manager) |
+
+heatstl writes under the key prefix `<instance_id>/...` to avoid colliding
+with diagnostic-designer's `ir/...` keys.
+
+### First-time R2 secret setup
+
+Create the R2 API token once at
+`dash.cloudflare.com → R2 → Manage R2 API Tokens` (Object Read & Write
+on the `analog-twins` bucket), then push it into Google Secret Manager so
+Cloud Run revisions can mount it:
+
+```bash
+gcloud services enable secretmanager.googleapis.com
+printf '%s' "<R2 access key id>"     | gcloud secrets create heatstl-r2-access-key-id     --data-file=-
+printf '%s' "<R2 secret access key>" | gcloud secrets create heatstl-r2-secret-access-key --data-file=-
+
+# Grant the Cloud Run runtime service account read access:
+PROJECT_ID=$(gcloud config get-value project)
+RUNTIME_SA="$(gcloud iam service-accounts list --filter='displayName:Default compute service account' --format='value(email)')"
+for s in heatstl-r2-access-key-id heatstl-r2-secret-access-key; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
 
 ### Deploy to Cloud Run
 
 ```bash
 PROJECT_ID=<gcp-project> \
-HEATSTL_GCS_BUCKET=<bucket> \
+ENGINE_S3_BUCKET=analog-twins \
+ENGINE_S3_ENDPOINT=https://<cloudflare-account-id>.r2.cloudflarestorage.com \
+ENGINE_S3_ACCESS_KEY_ID=<R2 access key id> \
+ENGINE_S3_SECRET_ACCESS_KEY=<R2 secret access key> \
 ./scripts/deploy_cloudrun.sh
 ```
 
-The script mirrors the inference-engine deploy: builds `linux/amd64`,
-pushes to Artifact Registry (`heatstl/heatstl-api`), and deploys with
-`--cpu 2 --memory 2Gi --concurrency 4 --timeout 900`. The companion
-`.github/workflows/deploy-cloudrun.yml` automates the same flow on push
-to `main`.
+The script builds `linux/amd64`, pushes to Artifact Registry
+(`heatstl/heatstl-api`), and deploys with `--cpu 2 --memory 2Gi
+--concurrency 4 --timeout 900`. The R2 access key + secret are mounted
+from Google Secret Manager via `--update-secrets`, never set as plain
+env vars on the revision. The companion `.github/workflows/deploy-cloudrun.yml`
+automates the same flow on push to `main`.
 
 ### Analog (the-grid) wiring
 
-To integrate, mirror the inference-engine pattern in
+To integrate, mirror the diagnostic-designer pattern in
 `lib/heatstl/engine-client.ts` + `mock-engine.ts` + `types.ts`, reading
 `HEATSTL_ENGINE_URL` and `HEATSTL_ENGINE_SECRET` env vars. The response
-URIs are `gs://` paths — resolve them via Analog's existing asset proxy.
+URIs are `s3://analog-twins/...` paths — resolve them via Analog's
+existing R2 asset proxy (`/api/asset` or `/api/ray-data` style).
 
 ## Out of scope for v4
 

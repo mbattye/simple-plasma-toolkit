@@ -1,18 +1,30 @@
 # Build heatstl Docker image and deploy a new Cloud Run revision on push to main.
 #
+# Artefact storage is Cloudflare R2 (S3-compatible), matching diagnostic-designer
+# so the-grid resolves URIs from either engine through a single asset proxy.
+#
 # One-time GitHub repo setup (Settings → Secrets and variables → Actions):
-#   GCP_PROJECT_ID    — GCP project id
-#   GCP_SA_KEY        — JSON key for a service account with:
-#                       Artifact Registry Writer, Cloud Run Admin,
-#                       Service Account User (on the Cloud Run runtime SA)
-#   HEATSTL_GCS_BUCKET (variable or secret) — bucket for artefact uploads
+#
+# Secrets:
+#   GCP_PROJECT_ID                — GCP project id
+#   GCP_SA_KEY                    — JSON key for a service account with:
+#                                   Artifact Registry Writer, Cloud Run Admin,
+#                                   Service Account User, Secret Manager Accessor
+#
+# Variables (or secrets; non-sensitive):
+#   ENGINE_S3_BUCKET              — R2 bucket name (e.g. analog-twins)
+#   ENGINE_S3_ENDPOINT            — R2 endpoint, https://<acct>.r2.cloudflarestorage.com
+#
+# The R2 access key + secret live in **Google Secret Manager** (created once,
+# see README "First-time R2 secret setup"). The Cloud Run revision references
+# them by name via --update-secrets, so they never appear in this workflow,
+# in GitHub logs, or in the Cloud Run revision env.
 #
 # Optional repository variables (Settings → Variables):
 #   GCP_REGION         — default europe-west2
 #   GCP_ARTIFACT_REPO  — default heatstl
 #   CLOUD_RUN_SERVICE  — default heatstl-api
-#
-# Existing Cloud Run env (e.g. ENGINE_SECRET) is preserved across deploys.
+#   ENGINE_S3_REGION   — default "auto" (R2 ignores this; "auto" is convention)
 
 name: Deploy to Cloud Run
 
@@ -36,6 +48,7 @@ env:
   REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
   REPO: ${{ vars.GCP_ARTIFACT_REPO || 'heatstl' }}
   SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'heatstl-api' }}
+  S3_REGION: ${{ vars.ENGINE_S3_REGION || 'auto' }}
 
 jobs:
   deploy:
@@ -75,12 +88,21 @@ jobs:
         env:
           PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO }}/heatstl-api:${{ github.sha }}
-          BUCKET: ${{ secrets.HEATSTL_GCS_BUCKET }}
+          S3_BUCKET: ${{ vars.ENGINE_S3_BUCKET || secrets.ENGINE_S3_BUCKET }}
+          S3_ENDPOINT: ${{ vars.ENGINE_S3_ENDPOINT || secrets.ENGINE_S3_ENDPOINT }}
         run: |
-          ENV_VARS="HEATSTL_ARTIFACT_STORE=gcs"
-          if [[ -n "${BUCKET}" ]]; then
-            ENV_VARS+=",HEATSTL_GCS_BUCKET=${BUCKET}"
+          if [[ -z "${S3_BUCKET}" || -z "${S3_ENDPOINT}" ]]; then
+            echo "ENGINE_S3_BUCKET and ENGINE_S3_ENDPOINT must be set as repo vars or secrets." >&2
+            exit 1
           fi
+          ENV_VARS="ENGINE_ARTIFACT_STORE=s3"
+          ENV_VARS+=",ENGINE_S3_BUCKET=${S3_BUCKET}"
+          ENV_VARS+=",ENGINE_S3_ENDPOINT=${S3_ENDPOINT}"
+          ENV_VARS+=",ENGINE_S3_REGION=${{ env.S3_REGION }}"
+
+          SECRETS="ENGINE_S3_ACCESS_KEY_ID=heatstl-r2-access-key-id:latest"
+          SECRETS+=",ENGINE_S3_SECRET_ACCESS_KEY=heatstl-r2-secret-access-key:latest"
+
           gcloud run deploy "${{ env.SERVICE }}" \
             --image "${IMAGE}" \
             --region "${{ env.REGION }}" \
@@ -93,4 +115,5 @@ jobs:
             --max-instances 5 \
             --timeout 900 \
             --update-env-vars "${ENV_VARS}" \
+            --update-secrets "${SECRETS}" \
             --allow-unauthenticated
