@@ -65,6 +65,37 @@ def test_p_hat_profile_sweep_endpoints_and_midpoint():
     np.testing.assert_allclose(f(100.0), direction_from_angles(90.0, 0.0), atol=1e-12)
 
 
+def test_p_hat_profile_sweep_with_azimuth():
+    """Azimuth-sweep variant: both polar and azimuth interpolate linearly."""
+    spec = PHatProfileSpec(
+        kind="sweep", angle_start=20.0, angle_end=75.0,
+        azimuth=0.0, azimuth_start=0.0, azimuth_end=60.0,
+        t0=0.0, t1=10.0,
+    )
+    f = make_p_hat_profile(spec)
+    # Endpoints
+    np.testing.assert_allclose(f(0.0), direction_from_angles(20.0, 0.0), atol=1e-12)
+    np.testing.assert_allclose(f(10.0), direction_from_angles(75.0, 60.0), atol=1e-12)
+    # Midpoint
+    np.testing.assert_allclose(f(5.0), direction_from_angles(47.5, 30.0), atol=1e-12)
+    # Clamping outside the window
+    np.testing.assert_allclose(f(-3.0), direction_from_angles(20.0, 0.0), atol=1e-12)
+    np.testing.assert_allclose(f(100.0), direction_from_angles(75.0, 60.0), atol=1e-12)
+
+
+def test_p_hat_profile_sweep_back_compat_no_azimuth():
+    """If azimuth_start/end are None, azimuth is held fixed at `azimuth`."""
+    spec = PHatProfileSpec(
+        kind="sweep", angle_start=0.0, angle_end=90.0,
+        azimuth=45.0, t0=0.0, t1=10.0,
+    )
+    f = make_p_hat_profile(spec)
+    for t in [0.0, 3.0, 7.5, 10.0]:
+        # Azimuth component (xy direction) is fixed; only the polar angle moves.
+        expected = direction_from_angles(0.0 + (t / 10.0) * 90.0, 45.0)
+        np.testing.assert_allclose(f(t), expected, atol=1e-12)
+
+
 # --------------------------------------------------------------------------- #
 # 1D slab transient analytic
 # --------------------------------------------------------------------------- #
@@ -174,3 +205,14 @@ def test_starship_flip_conservative_regression():
     assert near_peak, "no frames with meaningful Q_in"
     worst = max(abs(f["residual_transient_rel"]) for f in near_peak)
     assert worst < 0.05, f"worst transient residual {worst*100:.2f}% during heating window"
+
+    # Ghost neighbour STL should be dropped next to the main result (hex6 on).
+    ghost = out_dir / "flip_regression_neighbors.stl"
+    assert ghost.exists() and ghost.stat().st_size > 0, "neighbour STL not written"
+    # Sanity-load it: should contain exactly 6 disjoint copies of the central
+    # tile (one per hex neighbour position).
+    central_mesh = trimesh.load_mesh(str(repo / "examples" / "heat_shield_tile.stl"))
+    ghost_mesh = trimesh.load_mesh(str(ghost))
+    assert ghost_mesh.faces.shape[0] == 6 * central_mesh.faces.shape[0], (
+        ghost_mesh.faces.shape, central_mesh.faces.shape
+    )

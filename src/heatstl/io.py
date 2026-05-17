@@ -135,6 +135,21 @@ def write_xdmf_arrow_timeseries(
         os.chdir(prev_cwd)
 
 
+def write_neighbours_stl(path: str | Path, occluder) -> None:
+    """Dump the (translated) neighbour-tile geometry as a binary STL.
+
+    `occluder` is the `trimesh.Trimesh` already built by `replicate()` for
+    shadow ray-casting — we reuse its vertices/faces so the STL sits in the
+    exact same lattice positions used during the solve. Load alongside the
+    main result XDMF in ParaView and set Opacity ~0.3 for a ghost look.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if occluder is None or len(occluder.faces) == 0:
+        return
+    occluder.export(str(path), file_type="stl")
+
+
 def write_transient_report(
     path: str | Path,
     meta: dict,

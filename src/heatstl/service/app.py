@@ -219,6 +219,8 @@ class TransientRequest(CommonOpts):
     angle_csv_url: Optional[str] = None
     angle_start: Optional[float] = None
     angle_end: Optional[float] = None
+    azimuth_start: Optional[float] = None
+    azimuth_end: Optional[float] = None
     angle_t0: Optional[float] = None
     angle_t1: Optional[float] = None
 
@@ -230,6 +232,7 @@ class SteadyResponse(BaseModel):
     version: str
     result_uri: str
     report_uri: str
+    neighbours_uri: Optional[str] = None  # STL of ghost neighbour tiles
     peak_T: float
     min_T: float
     Q_in: float
@@ -248,6 +251,7 @@ class TransientResponse(BaseModel):
     arrow_uri: str           # arrow XDMF
     arrow_h5_uri: str
     report_uri: str          # JSON with per-step diagnostics
+    neighbours_uri: Optional[str] = None  # STL of ghost neighbour tiles
     vtu_frame_uris: list[str] = Field(default_factory=list)
     peak_T: float
     t_peak: float
@@ -386,11 +390,24 @@ def solve_steady_endpoint(
             content_type="application/json",
         )
 
+        neighbours_uri: Optional[str] = None
+        if out.occluder is not None:
+            from heatstl.io import write_neighbours_stl
+            neighbours_path = td_path / "neighbours.stl"
+            write_neighbours_stl(neighbours_path, out.occluder)
+            if neighbours_path.exists():
+                neighbours_uri = store.put(
+                    f"{req.instance_id}/neighbours.stl",
+                    neighbours_path.read_bytes(),
+                    content_type="model/stl",
+                )
+
     return SteadyResponse(
         instance_id=req.instance_id,
         version=__version__,
         result_uri=result_uri,
         report_uri=report_uri,
+        neighbours_uri=neighbours_uri,
         peak_T=diag.peak_T,
         min_T=diag.min_T,
         Q_in=diag.Q_in,
@@ -443,13 +460,21 @@ def solve_transient_endpoint(
             t_ramp=req.q_ramp_t, t0=req.q_t0, fwhm=req.q_fwhm,
             csv=q_csv_local,
         )
+        azimuth_start = req.azimuth_start if req.azimuth_start is not None else pre.get("azimuth_start")
+        azimuth_end = req.azimuth_end if req.azimuth_end is not None else pre.get("azimuth_end")
+        angle_start_eff = req.angle_start if req.angle_start is not None else pre.get("angle_start", 0.0)
+        angle_end_eff = req.angle_end if req.angle_end is not None else pre.get("angle_end", 0.0)
+        angle_t0_eff = req.angle_t0 if req.angle_t0 is not None else pre.get("angle_t0", 0.0)
+        angle_t1_eff = req.angle_t1 if req.angle_t1 is not None else pre.get("angle_t1", max(req.duration, 1.0))
         angle_spec = PHatProfileSpec(
             kind=req.angle_profile, p_hat=p_hat,
-            angle_start=req.angle_start if req.angle_start is not None else 0.0,
-            angle_end=req.angle_end if req.angle_end is not None else 0.0,
+            angle_start=angle_start_eff,
+            angle_end=angle_end_eff,
             azimuth=req.azimuth_deg,
-            t0=req.angle_t0 if req.angle_t0 is not None else 0.0,
-            t1=req.angle_t1 if req.angle_t1 is not None else max(req.duration, 1.0),
+            azimuth_start=azimuth_start,
+            azimuth_end=azimuth_end,
+            t0=angle_t0_eff,
+            t1=angle_t1_eff,
             csv=angle_csv_local,
         )
         cfg_trans = TransientConfig(
@@ -549,6 +574,18 @@ def solve_transient_endpoint(
         arrow_h5_uri = store.put(f"{key_prefix}/result_arrow.h5", arrow_h5_path.read_bytes(), content_type="application/octet-stream")
         report_uri = store.put(f"{key_prefix}/report.json", report_json.read_bytes(), content_type="application/json")
 
+        neighbours_uri: Optional[str] = None
+        if ctx.occluder is not None:
+            from heatstl.io import write_neighbours_stl
+            neighbours_path = td_path / "neighbours.stl"
+            write_neighbours_stl(neighbours_path, ctx.occluder)
+            if neighbours_path.exists():
+                neighbours_uri = store.put(
+                    f"{key_prefix}/neighbours.stl",
+                    neighbours_path.read_bytes(),
+                    content_type="model/stl",
+                )
+
         vtu_uris: list[str] = []
         if req.write_vtu_frames:
             frame_dir = td_path / "frames"
@@ -575,6 +612,7 @@ def solve_transient_endpoint(
         arrow_uri=arrow_uri,
         arrow_h5_uri=arrow_h5_uri,
         report_uri=report_uri,
+        neighbours_uri=neighbours_uri,
         vtu_frame_uris=vtu_uris,
         peak_T=float(peak_T),
         t_peak=float(t_peak),

@@ -14,6 +14,7 @@ from .diagnostics import compute as compute_diagnostics
 from .diagnostics import compute_frame
 from .geometry import UNIT_TO_M, direction_from_angles, load_stl, parse_direction
 from .io import (
+    write_neighbours_stl,
     write_report,
     write_transient_report,
     write_vtu,
@@ -89,6 +90,8 @@ ANGLE_PROFILES = ["constant", "sweep", "piecewise"]
 @click.option("--angle-csv", default=None, type=click.Path(dir_okay=False), help="For 'piecewise': 3-col CSV (t, theta_deg, phi_deg).")
 @click.option("--angle-start", default=None, type=float, help="Sweep: start polar angle (deg).")
 @click.option("--angle-end", default=None, type=float, help="Sweep: end polar angle (deg).")
+@click.option("--azimuth-start", default=None, type=float, help="Sweep: start azimuth (deg). Default holds --azimuth-deg fixed.")
+@click.option("--azimuth-end", default=None, type=float, help="Sweep: end azimuth (deg).")
 @click.option("--angle-t0", default=None, type=float, help="Sweep: start time, s.")
 @click.option("--angle-t1", default=None, type=float, help="Sweep: end time, s.")
 # Mesh / units / IO
@@ -135,6 +138,8 @@ def main(**opts):
     q_ramp_t = pre.get("q_ramp_t", opts["q_ramp_t"]) if opts["q_ramp_t"] == 1.0 else opts["q_ramp_t"]
     angle_start = _resolve("angle_start", None)
     angle_end = _resolve("angle_end", None)
+    azimuth_start = _resolve("azimuth_start", None)
+    azimuth_end = _resolve("azimuth_end", None)
     angle_t0 = _resolve("angle_t0", None)
     angle_t1 = _resolve("angle_t1", None)
 
@@ -195,6 +200,8 @@ def main(**opts):
         angle_start=angle_start if angle_start is not None else 0.0,
         angle_end=angle_end if angle_end is not None else 0.0,
         azimuth=opts["azimuth_deg"],
+        azimuth_start=azimuth_start,
+        azimuth_end=azimuth_end,
         t0=angle_t0 if angle_t0 is not None else 0.0,
         t1=angle_t1 if angle_t1 is not None else max(duration, 1.0),
         csv=opts["angle_csv"],
@@ -239,6 +246,18 @@ def _run_steady(cfg, surf, opts, out_path, report_path, k, p_hat, t_wall0):
         )
 
     write_vtu(out_path, result)
+
+    # Ghost neighbour tiles (drop the same lattice copies used for shadowing
+    # as a translucent STL — useful for ParaView visualisation).
+    neighbours_uri: str | None = None
+    if out.occluder is not None:
+        out_p = Path(out_path)
+        neighbours_path = out_p.with_name(out_p.stem + "_neighbors.stl")
+        write_neighbours_stl(neighbours_path, out.occluder)
+        neighbours_uri = str(neighbours_path)
+        if verbose:
+            click.echo(f"[heatstl] wrote ghost neighbours {neighbours_path}")
+
     meta = {
         "version": __version__, "stl": str(Path(opts["stl_path"]).resolve()),
         "preset": opts["preset"], "q0_W_m2": opts["q0"], "p_hat": p_hat.tolist(),
@@ -364,6 +383,13 @@ def _run_transient(cfg, cfg_trans, surf, opts, out_path, report_path,
     )
     if verbose:
         click.echo(f"[heatstl] wrote arrow companion {arrow_path}")
+
+    # Ghost neighbour STL (only when hex6 neighbours are enabled).
+    if ctx.occluder is not None:
+        neighbours_path = out_p.with_name(out_p.stem + "_neighbors.stl")
+        write_neighbours_stl(neighbours_path, ctx.occluder)
+        if verbose:
+            click.echo(f"[heatstl] wrote ghost neighbours {neighbours_path}")
 
     meta = {
         "version": __version__, "stl": str(Path(opts["stl_path"]).resolve()),

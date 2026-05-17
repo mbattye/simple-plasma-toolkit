@@ -87,6 +87,7 @@ class PipelineOutput:
     mesh_io: object
     n_shadowed: int
     n_central_heated: int
+    occluder: trimesh.Trimesh | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -201,4 +202,5 @@ def build_bc(surf: SurfaceMesh, cfg: RunConfig) -> PipelineOutput:
         mesh_io=ctx.mesh_io,
         n_shadowed=n_shadowed,
         n_central_heated=int(bc.heated_facets.size),
+        occluder=ctx.occluder,
     )

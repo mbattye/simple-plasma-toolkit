@@ -11,8 +11,10 @@ Supported kinds:
     constant        — single scalar / direction held for all t
     ramp            — q ramps from 0 to q0 over t_ramp (q profile only)
     gaussian        — q0 · exp(-(t-t0)² / 2σ²),  σ = fwhm / 2√(2 ln 2)  (q only)
-    sweep           — angle linearly interpolates between (θ0, t0) and (θ1, t1)
-                      held at endpoints outside. Azimuth fixed.            (p̂ only)
+    sweep           — polar θ AND azimuth φ each linearly interpolate between
+                      (θ0/φ0, t0) and (θ1/φ1, t1), held at endpoints outside.
+                      If azimuth_start == azimuth_end the azimuth stays fixed
+                      at that value (back-compatible).                     (p̂ only)
     piecewise       — linear interpolation over a CSV table (either)
 """
 
@@ -47,7 +49,9 @@ class PHatProfileSpec:
     p_hat: np.ndarray | None = None   # for 'constant'
     angle_start: float = 0.0          # deg, polar
     angle_end: float = 0.0
-    azimuth: float = 0.0
+    azimuth: float = 0.0              # held constant if start/end unset
+    azimuth_start: float | None = None
+    azimuth_end: float | None = None
     t0: float = 0.0
     t1: float = 1.0
     csv: str | None = None
@@ -90,7 +94,11 @@ def make_p_hat_profile(spec: PHatProfileSpec) -> Callable[[float], np.ndarray]:
         p = np.asarray(spec.p_hat, dtype=float)
         return lambda t: p
     if kind == "sweep":
-        a0, a1, az = spec.angle_start, spec.angle_end, spec.azimuth
+        a0, a1 = spec.angle_start, spec.angle_end
+        # Azimuth sweep is optional. If azimuth_start/end are unset, hold
+        # azimuth fixed at `azimuth` for the whole sweep (legacy behaviour).
+        az0 = spec.azimuth_start if spec.azimuth_start is not None else spec.azimuth
+        az1 = spec.azimuth_end if spec.azimuth_end is not None else az0
         t0, t1 = spec.t0, spec.t1
         if t1 <= t0:
             raise ValueError("sweep requires t1 > t0")
@@ -98,7 +106,8 @@ def make_p_hat_profile(spec: PHatProfileSpec) -> Callable[[float], np.ndarray]:
         def f(t: float) -> np.ndarray:
             frac = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
             angle = a0 + frac * (a1 - a0)
-            return direction_from_angles(angle, az)
+            azimuth = az0 + frac * (az1 - az0)
+            return direction_from_angles(angle, azimuth)
 
         return f
     if kind == "piecewise":

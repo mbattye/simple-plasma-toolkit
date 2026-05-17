@@ -91,8 +91,23 @@ STARSHIP_FLIP_REALISTIC = {
 }
 
 
+# Showcase variant: wider 3D sweep that gives a more visible arrow trajectory
+# in ParaView. Polar 20°→75° emulates a vehicle pitching up from near-vertical
+# into the belly-flop, and a 0°→60° azimuth sweep emulates a bank reversal
+# during the heat pulse (physically motivated by cross-range control). Same
+# q0 amplitude as the conservative preset.
+STARSHIP_FLIP_SHOWCASE = {
+    **_STARSHIP_FLIP_COMMON,
+    "angle_start": 20.0,
+    "angle_end": 75.0,
+    "azimuth_start": 0.0,
+    "azimuth_end": 60.0,
+}
+
+
 PRESETS: dict[str, dict] = {
     "starship": STARSHIP_TILE,
     "starship-flip-conservative": STARSHIP_FLIP_CONSERVATIVE,
     "starship-flip-realistic": STARSHIP_FLIP_REALISTIC,
+    "starship-flip-showcase": STARSHIP_FLIP_SHOWCASE,
 }

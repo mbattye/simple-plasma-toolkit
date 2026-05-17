@@ -46,11 +46,25 @@ bash examples/run_starship_flip.sh
 # heating window, 120 timesteps in ~20 s wall time
 ```
 
-Open `examples/out/starship_flip.xdmf` in ParaView to scrub through time.
-A companion `examples/out/starship_flip_arrow.xdmf` is written too — load
-it alongside, apply **Filters → Glyph** with `Vectors = incident_scaled`
-and `Glyph Type = Arrow` to see an animated arrow indicating the beam
-direction and pulse magnitude.
+Open `examples/out/starship_flip.xdmf` in ParaView (use the **Xdmf3 Reader T**)
+to scrub through time. A companion `examples/out/starship_flip_arrow.xdmf` is
+written too — load it alongside, apply **Filters → Glyph** with
+`Orientation Array = incident_scaled`, `Scale Array = incident_scaled`,
+`Vector Scale Mode = Scale by Magnitude`, `Glyph Type = Arrow` to see an
+animated arrow indicating beam direction and pulse magnitude.
+
+**Starship-flip showcase (v4.2)** — 3D bank-reversal variant for visual
+demos: polar 20°→75° plus azimuth 0°→60° during the same Gaussian pulse,
+so the arrow traces a curved trajectory through space:
+
+```bash
+bash examples/run_starship_flip_showcase.sh
+# peak T ≈ 1130 K at t = 335 s
+```
+
+When `--neighbors hex6` is set, a `*_neighbors.stl` is also emitted next
+to the result — load it in ParaView (STL Reader), set Opacity ≈ 0.3,
+pick a contrasting solid colour to get the "ghost adjacent tiles" look.
 
 ## CLI overview
 
@@ -95,6 +109,15 @@ from `--back-axis` if provided, otherwise it falls back to `--direction`
 oblique beams, pin `--back-axis` to the tile's geometric symmetry axis
 (e.g. `--back-axis 0,0,-1`) — the Starship preset does this for you.
 
+### Ghost neighbour STL (v4.2)
+
+When `--neighbors hex6` is set, a `*_neighbors.stl` is automatically dropped
+next to the main `--out` file. This is the exact same six-tile lattice used
+for shadow ray-casting, exported as a single STL. Load it in ParaView (STL
+Reader) alongside the central result, set **Opacity ≈ 0.3**, and pick a solid
+colour to get a translucent "ghost adjacent tiles" view that makes oblique
+beam directions and shadowing visually obvious.
+
 ### Hex neighbours and shadowing
 
 | Flag | Default | Meaning |
@@ -125,6 +148,7 @@ flat even for grazing beams.
 | `--q-t0`, `--q-fwhm` | — | Gaussian peak time and FWHM. |
 | `--angle-profile {constant,sweep,piecewise}` | `constant` | `p̂(t)` shape. |
 | `--angle-start`, `--angle-end`, `--angle-t0`, `--angle-t1` | — | Sweep parameters (polar deg, s). |
+| `--azimuth-start`, `--azimuth-end` | — | Optional azimuth sweep over the same window. If unset, azimuth is held fixed at `--azimuth-deg`. |
 | `--angle-csv PATH` | — | For `piecewise`: 3-col CSV `(t, θ_deg, φ_deg)`. |
 | `--vtu-frames PATTERN` | — | Also write numbered VTUs (e.g. `out/flip_{:04d}.vtu`). |
 
@@ -141,6 +165,7 @@ report.
 | `starship` | Steady. `k=0.1 W/m·K` silica TPS, `adiabatic-back-robin`, `back-h=100`, `back-T-inf=400`, `back-axis=0,0,-1`, radiation on with `ε=0.89`, `T-env=300`. |
 | `starship-flip-conservative` | Transient. 600 s, 120 steps, ρ=144, c_p=1200, Gaussian `q(t)` peaking at t=300 s with FWHM 250 s, attitude sweep 60°→90° between 100 and 500 s. |
 | `starship-flip-realistic` | As above but wider attitude sweep (50°→90°). Drive with a larger `--q0` (e.g. `1e6`); peak T pushes 1500–1800 K, into the constant-k approximation limit. |
+| `starship-flip-showcase` | As conservative but with a wider 3D sweep — polar 20°→75° plus azimuth 0°→60° — so the beam-direction arrow traces a clear curved trajectory in ParaView. |
 
 Presets are *partial* defaults: any flag you set explicitly wins.
 
